@@ -184,6 +184,93 @@ def degree_based_mapping(validation_g1_file, validation_g2_file,
     except Exception as e:
         print(f"Error in degree-based mapping: {e}")
 
+def neighbor_based_mapping(validation_g1_file, validation_g2_file, 
+                         seed_sample_file,
+                         output_file="neighbor_mapping.txt"):
+    """
+    Generates node mapping using:
+    - 500 correct seed pairs
+    - Neighbor similarity for remaining nodes
+    - Falls back to degree matching when needed
+    """
+    try:
+        # Read graphs
+        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
+        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
+        
+        # Get degree dictionaries
+        g1_degrees = dict(G1.degree())
+        g2_degrees = dict(G2.degree())
+        
+        # Read seed pairs
+        with open(seed_sample_file, 'r') as f:
+            seed_pairs = [list(map(int, line.strip().split())) for line in f if line.strip()]
+            seed_dict = {g1: g2 for g1, g2 in seed_pairs}
+        
+        # Create reverse mapping (G2 -> G1)
+        reverse_seed = {v: k for k, v in seed_dict.items()}
+        
+        # Find unmapped nodes
+        mapped_g1 = set(seed_dict.keys())
+        mapped_g2 = set(seed_dict.values())
+        unmapped_g1 = list(set(G1.nodes()) - mapped_g1)
+        unmapped_g2 = list(set(G2.nodes()) - mapped_g2)
+        
+        # Create degree bins for fallback
+        degree_to_g2 = {}
+        for node in unmapped_g2:
+            deg = g2_degrees[node]
+            if deg not in degree_to_g2:
+                degree_to_g2[deg] = []
+            degree_to_g2[deg].append(node)
+        
+        # Neighbor-based matching
+        full_mapping = seed_dict.copy()
+        for g1_node in unmapped_g1:
+            best_match = None
+            max_score = -1
+            
+            # Get G1's neighbors and their mappings
+            g1_neighbors = set(G1.neighbors(g1_node))
+            mapped_neighbors = [seed_dict[n] for n in g1_neighbors if n in seed_dict]
+            
+            # Only proceed if we have some mapped neighbors
+            if mapped_neighbors:
+                # Check all possible G2 candidates
+                for g2_candidate in unmapped_g2:
+                    g2_neighbors = set(G2.neighbors(g2_candidate))
+                    
+                    # Calculate overlap score
+                    score = len(set(mapped_neighbors) & g2_neighbors)
+                    
+                    if score > max_score:
+                        max_score = score
+                        best_match = g2_candidate
+            
+            # Fallback to degree matching if no good neighbor match
+            if best_match is None:
+                target_deg = g1_degrees[g1_node]
+                closest_deg = min(degree_to_g2.keys(), 
+                                 key=lambda x: abs(x - target_deg))
+                if degree_to_g2[closest_deg]:
+                    best_match = degree_to_g2[closest_deg].pop()
+            
+            if best_match:
+                full_mapping[g1_node] = best_match
+                if best_match in unmapped_g2:
+                    unmapped_g2.remove(best_match)
+        
+        # Write output
+        with open(output_file, 'w') as f:
+            for g1, g2 in full_mapping.items():
+                f.write(f"{g1} {g2}\n")
+        
+        print(f"Generated {output_file} with {len(seed_dict)} seed pairs + {len(unmapped_g1)} neighbor-based mappings.")
+    
+    except Exception as e:
+        print(f"Error in neighbor-based mapping: {e}")
+        return None
+
 
 def main():
     print("Welcome to the Seed-Based De-anonymization Program.")
@@ -227,10 +314,15 @@ def main():
             print(f"Guessed Accuracy: {correct}/{total} ({acc:.2f}%)")
 
             degree_based_mapping(validation_g1, validation_g2, "validation_seed_sample.txt")
-            correct, total, acc = calculate_mapping_accuracy("degree_based_mapping.txt", "test_seed_mapping.txt")
+            correct, total, acc = calculate_mapping_accuracy("degree_based_mapping.txt", validation_seed_mapping)
             print(f"Degree-Based Accuracy: {correct}/{total} ({acc:.2f}%)")
+
+            neighbor_based_mapping(validation_g1, validation_g2, "validation_seed_sample.txt")
+            correct, total, acc = calculate_mapping_accuracy("neighbor_mapping.txt", validation_seed_mapping)
+            print(f"Neighbor/Degree-Based Accuracy: {correct}/{total} ({acc:.2f}%)")
+
         else:
-            print("\nPlease fix the missing files and try again.")
+            print("\nPlease add the missing files and try again.")
     else:
         print("Currently not implemented.")
 
