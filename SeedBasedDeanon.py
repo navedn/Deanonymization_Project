@@ -125,6 +125,65 @@ def generate_random_mapping(validation_g1_file, validation_g2_file,
         print(f"Error generating random mapping: {e}")
 
 
+def degree_based_mapping(validation_g1_file, validation_g2_file, 
+                        seed_sample_file,
+                        output_file="degree_based_mapping.txt"):
+    """
+    Generates node mapping using:
+    - 500 correct seed pairs from sample file
+    - Degree-similarity for remaining nodes
+    """
+    try:
+        # Read graphs
+        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
+        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
+        
+        # Get degree dictionaries
+        g1_degrees = dict(G1.degree())
+        g2_degrees = dict(G2.degree())
+        
+        # Read seed pairs
+        with open(seed_sample_file, 'r') as f:
+            seed_pairs = [list(map(int, line.strip().split())) for line in f if line.strip()]
+            seed_dict = {g1: g2 for g1, g2 in seed_pairs}
+        
+        # Find unmapped nodes
+        mapped_g1 = set(seed_dict.keys())
+        mapped_g2 = set(seed_dict.values())
+        unmapped_g1 = list(set(G1.nodes()) - mapped_g1)
+        unmapped_g2 = list(set(G2.nodes()) - mapped_g2)
+        
+        # Create degree bins for faster matching
+        degree_to_g2 = {}
+        for node in unmapped_g2:
+            deg = g2_degrees[node]
+            if deg not in degree_to_g2:
+                degree_to_g2[deg] = []
+            degree_to_g2[deg].append(node)
+        
+        # Match by degree similarity
+        full_mapping = seed_dict.copy()
+        for g1_node in unmapped_g1:
+            target_deg = g1_degrees[g1_node]
+            
+            # Find closest available degree
+            closest_deg = min(degree_to_g2.keys(), 
+                             key=lambda x: abs(x - target_deg))
+            
+            if degree_to_g2[closest_deg]:
+                matched_g2 = degree_to_g2[closest_deg].pop()
+                full_mapping[g1_node] = matched_g2
+        
+        # Write output
+        with open(output_file, 'w') as f:
+            for g1, g2 in full_mapping.items():
+                f.write(f"{g1} {g2}\n")
+        
+        print(f"Generated {output_file} with {len(seed_dict)} seed pairs + {len(unmapped_g1)} degree-based mappings.")
+    
+    except Exception as e:
+        print(f"Error in degree-based mapping: {e}")
+
 
 def main():
     print("Welcome to the Seed-Based De-anonymization Program.")
@@ -166,6 +225,10 @@ def main():
             generate_random_mapping(validation_g1, validation_g2, "validation_seed_sample.txt")
             correct, total, acc = calculate_mapping_accuracy("guessed_seed_mapping.txt", validation_seed_mapping)
             print(f"Guessed Accuracy: {correct}/{total} ({acc:.2f}%)")
+
+            degree_based_mapping(validation_g1, validation_g2, "validation_seed_sample.txt")
+            correct, total, acc = calculate_mapping_accuracy("degree_based_mapping.txt", "test_seed_mapping.txt")
+            print(f"Degree-Based Accuracy: {correct}/{total} ({acc:.2f}%)")
         else:
             print("\nPlease fix the missing files and try again.")
     else:
