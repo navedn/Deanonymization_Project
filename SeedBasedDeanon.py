@@ -34,15 +34,15 @@ def create_validation_seed_sample(validation_seed_file, output_file="validation_
     # Example usage:
     # create_validation_seed_sample("validation_seed_mapping.txt")
 
-def calculate_mapping_accuracy(predicted_file, ground_truth_file):
+def calculate_mapping_accuracy(predicted_file, validated_file):
     """
-    Compares a predicted mapping file against the ground truth file.
+    Compares a predicted mapping file against the validated file.
     Returns accuracy as (correct_matches, total_possible_matches, accuracy_percentage).
-    Handles blank lines and mismatched lengths gracefully.
+    Handles blank lines and mismatched lengths.
     """
     try:
-        # Read ground truth mappings (skip blanks)
-        with open(ground_truth_file, 'r') as f:
+        # Read validated mappings (skip blanks)
+        with open(validated_file, 'r') as f:
             truth = {line.split()[0]: line.split()[1] for line in f if line.strip()}
         total_possible = len(truth)
         
@@ -59,8 +59,7 @@ def calculate_mapping_accuracy(predicted_file, ground_truth_file):
         # Calculate accuracy
         accuracy = correct / total_possible if total_possible > 0 else 0.0
         
-        print("\nAmount Correct: " + str(correct) + "/"  + str(total_possible) + "\nAccuracy: " + str(round(accuracy * 100, 2)) + "%")
-        # return correct, total_possible, accuracy * 100
+        return correct, total_possible, accuracy * 100
     
     except FileNotFoundError as e:
         print(f"Error: {e.filename} not found.")
@@ -70,16 +69,15 @@ def calculate_mapping_accuracy(predicted_file, ground_truth_file):
         return 0, 0, 0.0
 
     # Example usage:
-        # calculate_mapping_accuracy("my_output.txt", "validation_seed_mapping.txt")
         # Prev Implementation
-            # correct, total, acc = calculate_mapping_accuracy("my_output.txt", "validation_seed_mapping.txt")
+            # correct, total, acc = calculate_mapping_accuracy("my_mapping.txt", "validation_seed_mapping.txt")
             # print(f"Accuracy: {correct}/{total} ({acc:.2f}%)")
     # Issues?:
         # If the user just tries out multiple different seeds such as 1899 1 1899 2 1899 3, it does not penalize it but I guess that's not too big of an issue as long as I check for duplicates.
 
 def main():
     print("Welcome to the Seed-Based De-anonymization Program.")
-    print("If you have not done so already, place the following files are in the same directory as this script:")
+    print("If you have not done so already, place the following files in the same directory as this script:")
     print("- G1 dataset file (e.g., seed_G1.edgelist)")
     print("- G2 dataset file (e.g., seed_G2.edgelist)")
     print("- Seed mapping file (e.g., seed_mapping.txt)\n")
@@ -107,8 +105,11 @@ def main():
                 all_exist = False
 
         if all_exist:
-            print("\nSuccess! All files are ready for processing.")
-            calculate_mapping_accuracy("validation_seed_sample copy.txt", "test_seed_mapping.txt")
+            print("\nAll files are ready for processing.")
+                # calculate_mapping_accuracy("validation_seed_sample.txt", validation_seed_mapping)
+            correct, total, acc = calculate_mapping_accuracy("validation_seed_sample.txt", validation_seed_mapping)
+            print(f"Accuracy: {correct}/{total} ({acc:.2f}%)")
+
         else:
             print("\nPlease fix the missing files and try again.")
     else:
