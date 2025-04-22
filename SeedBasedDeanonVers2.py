@@ -26,7 +26,7 @@ def create_validation_seed_sample(validation_seed_file, output_file="validation_
         with open(output_file, 'w') as f:
             f.write("\n".join(sampled_lines))
         
-        print(f"Successfully created {output_file} with {sample_size} random seed pairs (blank lines ignored).")
+        print(f"Successfully created {output_file} with {sample_size} random seed pairs.")
     
     except FileNotFoundError:
         print(f"Error: File '{validation_seed_file}' not found.")
@@ -113,7 +113,7 @@ def ppt_method_deanonymization(validation_g1_file, validation_g2_file,
                              threshold=0.5, max_iterations=20):
     """Uses the method provided within PPTs to map nodes"""
     try:
-        print("\nMethod may take 10 minutes to run, please be patient.")
+        print("\nMethod may take 10-15 minutes, please be patient.")
 
         # Read graphs
         G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
@@ -355,6 +355,95 @@ def hybrid_deanonymization(validation_g1_file, validation_g2_file,
         # Just for fun but after the PPT Method we check and make sure all mapped seeds are correct and then if not it reruns, we can do this with lower thresholds as well.
         # This won't work on the actual code since we cannot check but it might be a good idea for testing purposes to see the lowest threshold which remains accurate.
 
+def jaccard_similarity(u, v, G1, G2, mapped_pairs):
+    """Calculate Jaccard similarity between neighborhoods"""
+    # Get mapped neighbors of u in G1
+    u_neighbors = {mapped_pairs[n] for n in G1.neighbors(u) if n in mapped_pairs}
+    
+    # Get neighbors of v in G2
+    v_neighbors = set(G2.neighbors(v))
+    
+    intersection = len(u_neighbors & v_neighbors)
+    union = len(u_neighbors | v_neighbors)
+    
+    return intersection / union if union > 0 else 0
+
+def jaccard_hybrid_deanonymization(validation_g1_file, validation_g2_file, 
+                                  seed_sample_file, output_file="jaccard_hybrid.txt",
+                                  threshold=0.6, max_iterations=20):
+    try:
+        # [Basically the same as hybrid_deanonymization but replace score calculation being common neighbors w/ Jaccard Similarity]
+        # 1. First run seed-based propagation
+        mapped_pairs = ppt_method_deanonymization(
+            validation_g1_file, validation_g2_file,
+            seed_sample_file, output_file,
+            threshold, max_iterations
+        )
+        
+        if not mapped_pairs:
+            raise Exception("Seed-based step failed")
+        
+        # Reload graphs
+        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
+        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
+        reverse_mapped = {v:k for k,v in mapped_pairs.items()}
+        
+        # 2. Get remaining unmapped nodes
+        unmapped_g1 = [n for n in G1.nodes() if n not in mapped_pairs]
+        unmapped_g2 = [n for n in G2.nodes() if n not in reverse_mapped]
+        
+        if not unmapped_g1:
+            print("All nodes mapped by seed-based method!")
+            return mapped_pairs
+            
+        print(f"\nApplying neighbor/degree matching for {len(unmapped_g1)} remaining nodes...")
+
+        # 3 Enhanced neighbor matching with Jaccard
+        for u in unmapped_g1:
+            best_match = None
+            max_score = -1
+            
+            # Only proceed if node has mapped neighbors
+            if any(n in mapped_pairs for n in G1.neighbors(u)):
+                for v in unmapped_g2:
+                    score = jaccard_similarity(u, v, G1, G2, mapped_pairs)
+                    
+                    # Additional degree similarity factor (0.5 weight)
+                    degree_sim = 1 / (1 + abs(G1.degree(u) - G2.degree(v)))
+                    combined_score = 0.7 * score + 0.3 * degree_sim
+                    
+                    if combined_score > max_score:
+                        max_score = combined_score
+                        best_match = v
+            
+            # Fallback to degree matching
+            if best_match is None:
+                u_degree = G1.degree(u)
+                closest_degree = min([G2.degree(v) for v in unmapped_g2], 
+                                     key=lambda x: abs(x - u_degree))
+                candidates = [v for v in unmapped_g2 
+                             if G2.degree(v) == closest_degree]
+                if candidates:
+                    best_match = random.choice(candidates)  # Random choice implementation :D
+            
+            if best_match:
+                mapped_pairs[u] = best_match
+                unmapped_g2.remove(best_match)
+        # 4. Write final mapping
+        with open(output_file, 'w') as f:
+            for g1, g2 in mapped_pairs.items():
+                f.write(f"{g1} {g2}\n")
+        
+        final_count = len(mapped_pairs)
+        print(f"Hybrid mapping complete! Final count: {final_count}/{len(G1.nodes())}")
+        return mapped_pairs
+        
+    
+    except Exception as e:
+        print(f"Error in enhanced hybrid deanonymization: {e}")
+        return None
+
+
 def main():
     print("Welcome to the Seed-Based De-anonymization Program.")
     print("If you have not done so already, place the following files in the same directory as this script:")
@@ -395,6 +484,10 @@ def main():
             # ppt_method_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
             # correct, total, acc = calculate_mapping_accuracy("pptmethod_mapping.txt", validation_seed_mapping)
             # print(f"PPT Method Accuracy: {correct}/{total} ({acc:.2f}%)")
+
+            jaccard_hybrid_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
+            correct, total, acc = calculate_mapping_accuracy("jaccard_hybrid.txt", validation_seed_mapping)
+            print(f"Jaccard Hybrid Method Accuracy: {correct}/{total} ({acc:.2f}%)")
 
             hybrid_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
             correct, total, acc = calculate_mapping_accuracy("hybrid_mapping.txt", validation_seed_mapping)
