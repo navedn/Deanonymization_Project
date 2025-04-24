@@ -1,9 +1,10 @@
+from collections import defaultdict
 import os
 import random
+import time
 import networkx as nx
 import numpy as np
-from collections import defaultdict
-
+from scipy.spatial.distance import cosine
 
 def create_validation_seed_sample(validation_seed_file, output_file="validation_seed_sample.txt", sample_size=500):
     """
@@ -26,7 +27,7 @@ def create_validation_seed_sample(validation_seed_file, output_file="validation_
         with open(output_file, 'w') as f:
             f.write("\n".join(sampled_lines))
         
-        print(f"Successfully created {output_file} with {sample_size} random seed pairs.")
+        print(f"Successfully created {output_file} with {sample_size} random seed pairs (blank lines ignored).")
     
     except FileNotFoundError:
         print(f"Error: File '{validation_seed_file}' not found.")
@@ -79,6 +80,54 @@ def calculate_mapping_accuracy(predicted_file, validated_file):
     # Issues?:
         # If the user just tries out multiple different seeds such as 1899 1 1899 2 1899 3, it does not penalize it but I guess that's not too big of an issue as long as I check for duplicates.
 
+def generate_random_mapping(validation_g1_file, validation_g2_file, 
+                          seed_sample_file,
+                          output_file="guessed_seed_mapping.txt"):
+    """
+    Generates a complete node mapping with:
+    - 500 correct seed pairs from sample file
+    - Random guesses for remaining nodes
+    Uses NetworkX to handle graph operations.
+    """
+    try:
+        # Read graphs
+        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
+        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
+        
+        # Get all nodes as integers
+        g1_nodes = set(G1.nodes())
+        g2_nodes = set(G2.nodes())
+        
+        # Read seed pairs - bugfix: convert all to integers
+        with open(seed_sample_file, 'r') as f:
+            seed_pairs = [list(map(int, line.strip().split())) for line in f if line.strip()]
+            seed_dict = {g1: g2 for g1, g2 in seed_pairs}
+        
+        # Find unmapped nodes
+        mapped_g1 = set(seed_dict.keys())
+        mapped_g2 = set(seed_dict.values())
+        unmapped_g1 = list(g1_nodes - mapped_g1)
+        unmapped_g2 = list(g2_nodes - mapped_g2)
+        
+        # Random assignment
+        random.shuffle(unmapped_g2)
+        full_mapping = seed_dict.copy()
+        
+        # Only map nodes that exist in G2
+        for i, g1_node in enumerate(unmapped_g1):
+            if i < len(unmapped_g2):
+                full_mapping[g1_node] = unmapped_g2[i]
+        
+        # Write with consistent formatting
+        with open(output_file, 'w') as f:
+            for g1, g2 in full_mapping.items():
+                f.write(f"{g1} {g2}\n")
+        
+        print(f"Generated {output_file} with {len(seed_dict)} seed pairs + {len(unmapped_g1)} random mappings.")
+    
+    except Exception as e:
+        print(f"Error generating random mapping: {e}")
+
 def calculate_eccentricity(scores):
     """Calculate eccentricity of score vector"""
     if len(scores) < 2:
@@ -108,12 +157,14 @@ def similarity_score(u, v, G1, G2, mapped_pairs, reverse_mapped):
     degree_v = max(1, G2.degree(v))
     return matched / (np.sqrt(degree_u) * np.sqrt(degree_v))
 
+
 def ppt_method_deanonymization(validation_g1_file, validation_g2_file, 
                              seed_sample_file, output_file="pptmethod_mapping.txt",
                              threshold=0.5, max_iterations=20):
     """Uses the method provided within PPTs to map nodes"""
     try:
-        print("\nMethod may take 10-15 minutes, please be patient.")
+        print("\nMethod may take 5-10 minutes, please be patient. Currently using a threshold of " + str(threshold) + ".")
+        start_time = time.time()
 
         # Read graphs
         G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
@@ -129,7 +180,7 @@ def ppt_method_deanonymization(validation_g1_file, validation_g2_file,
         mapped_g1 = set(mapped_pairs.keys())
         mapped_g2 = set(reverse_mapped.keys())
         
-        # Main propagation loop
+        # Main PPT loop
         changed = True
         iteration = 0
         while changed and iteration < max_iterations:
@@ -182,106 +233,22 @@ def ppt_method_deanonymization(validation_g1_file, validation_g2_file,
                 f.write(f"{g1} {g2}\n")
         
         print(f"Completed in {iteration} iterations")
-        print(f"Final mapping contains {len(mapped_pairs)} pairs")
+        print(f"PPT mapping contains {len(mapped_pairs)} pairs")
+        total_time = time.time() - start_time
+        print(f"\nCompleted in {total_time:.2f} seconds")
+
         return mapped_pairs
     
     except Exception as e:
         print(f"Error in seed-based deanonymization: {e}")
         return None
 
-def neighbor_based_mapping(validation_g1_file, validation_g2_file, 
-                         seed_sample_file,
-                         output_file="neighbor_mapping.txt"):
-    """
-    Generates node mapping using:
-    - 500 correct seed pairs
-    - Neighbor similarity for remaining nodes
-    - Falls back to degree matching when needed
-    """
-    try:
-        # Read graphs
-        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
-        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
-        
-        # Get degree dictionaries
-        g1_degrees = dict(G1.degree())
-        g2_degrees = dict(G2.degree())
-        
-        # Read seed pairs
-        with open(seed_sample_file, 'r') as f:
-            seed_pairs = [list(map(int, line.strip().split())) for line in f if line.strip()]
-            seed_dict = {g1: g2 for g1, g2 in seed_pairs}
-        
-        # Create reverse mapping (G2 -> G1)
-        reverse_seed = {v: k for k, v in seed_dict.items()}
-        
-        # Find unmapped nodes
-        mapped_g1 = set(seed_dict.keys())
-        mapped_g2 = set(seed_dict.values())
-        unmapped_g1 = list(set(G1.nodes()) - mapped_g1)
-        unmapped_g2 = list(set(G2.nodes()) - mapped_g2)
-        
-        # Create degree bins for fallback
-        degree_to_g2 = {}
-        for node in unmapped_g2:
-            deg = g2_degrees[node]
-            if deg not in degree_to_g2:
-                degree_to_g2[deg] = []
-            degree_to_g2[deg].append(node)
-        
-        # Neighbor-based matching
-        full_mapping = seed_dict.copy()
-        for g1_node in unmapped_g1:
-            best_match = None
-            max_score = -1
-            
-            # Get G1's neighbors and their mappings
-            g1_neighbors = set(G1.neighbors(g1_node))
-            mapped_neighbors = [seed_dict[n] for n in g1_neighbors if n in seed_dict]
-            
-            # Only proceed if we have some mapped neighbors
-            if mapped_neighbors:
-                # Check all possible G2 candidates
-                for g2_candidate in unmapped_g2:
-                    g2_neighbors = set(G2.neighbors(g2_candidate))
-                    
-                    # Calculate overlap score
-                    score = len(set(mapped_neighbors) & g2_neighbors)
-                    
-                    if score > max_score:
-                        max_score = score
-                        best_match = g2_candidate
-            
-            # Fallback to degree matching if no good neighbor match
-            if best_match is None:
-                target_deg = g1_degrees[g1_node]
-                closest_deg = min(degree_to_g2.keys(), 
-                                 key=lambda x: abs(x - target_deg))
-                if degree_to_g2[closest_deg]:
-                    best_match = degree_to_g2[closest_deg].pop()
-            
-            if best_match:
-                full_mapping[g1_node] = best_match
-                if best_match in unmapped_g2:
-                    unmapped_g2.remove(best_match)
-        
-        # Write output
-        with open(output_file, 'w') as f:
-            for g1, g2 in full_mapping.items():
-                f.write(f"{g1} {g2}\n")
-        
-        print(f"Generated {output_file} with {len(seed_dict)} seed pairs + {len(unmapped_g1)} neighbor-based mappings.")
-    
-    except Exception as e:
-        print(f"Error in neighbor-based mapping: {e}")
-        return None
-
 
 def hybrid_deanonymization(validation_g1_file, validation_g2_file, 
                          seed_sample_file, output_file="hybrid_mapping.txt",
-                         threshold=0.5, max_iterations=20):
+                         threshold=0.3, max_iterations=20):
     try:
-        # 1. First run seed-based propagation
+        # 1. First run PPT method
         mapped_pairs = ppt_method_deanonymization(
             validation_g1_file, validation_g2_file,
             seed_sample_file, output_file,
@@ -345,103 +312,112 @@ def hybrid_deanonymization(validation_g1_file, validation_g2_file,
                 f.write(f"{g1} {g2}\n")
         
         final_count = len(mapped_pairs)
-        print(f"Hybrid mapping complete! Final count: {final_count}/{len(G1.nodes())}")
+        print(f"Hybrid mapping complete, final count: {final_count}/{len(G1.nodes())}")
         return mapped_pairs
         
     except Exception as e:
         print(f"Error in hybrid deanonymization: {e}")
         return None
     # Future Idea:
-        # Just for fun but after the PPT Method we check and make sure all mapped seeds are correct and then if not it reruns, we can do this with lower thresholds as well.
+        # Just for fun but after the PPT Method we check and make sure all mapped seeds are correct and then if not it reruns, we can do this with lower thresholds to test accuracy.
         # This won't work on the actual code since we cannot check but it might be a good idea for testing purposes to see the lowest threshold which remains accurate.
 
-def jaccard_similarity(u, v, G1, G2, mapped_pairs):
-    """Calculate Jaccard similarity between neighborhoods"""
-    # Get mapped neighbors of u in G1
-    u_neighbors = {mapped_pairs[n] for n in G1.neighbors(u) if n in mapped_pairs}
-    
-    # Get neighbors of v in G2
-    v_neighbors = set(G2.neighbors(v))
-    
-    intersection = len(u_neighbors & v_neighbors)
-    union = len(u_neighbors | v_neighbors)
-    
-    return intersection / union if union > 0 else 0
 
-def jaccard_hybrid_deanonymization(validation_g1_file, validation_g2_file, 
-                                  seed_sample_file, output_file="jaccard_hybrid.txt",
-                                  threshold=0.6, max_iterations=20):
-    try:
-        # [Basically the same as hybrid_deanonymization but replace score calculation being common neighbors w/ Jaccard Similarity]
-        # 1. First run seed-based propagation
-        mapped_pairs = ppt_method_deanonymization(
-            validation_g1_file, validation_g2_file,
-            seed_sample_file, output_file,
-            threshold, max_iterations
-        )
-        
-        if not mapped_pairs:
-            raise Exception("Seed-based step failed")
-        
-        # Reload graphs
-        G1 = nx.read_edgelist(validation_g1_file, nodetype=int)
-        G2 = nx.read_edgelist(validation_g2_file, nodetype=int)
-        reverse_mapped = {v:k for k,v in mapped_pairs.items()}
-        
-        # 2. Get remaining unmapped nodes
-        unmapped_g1 = [n for n in G1.nodes() if n not in mapped_pairs]
-        unmapped_g2 = [n for n in G2.nodes() if n not in reverse_mapped]
-        
-        if not unmapped_g1:
-            print("All nodes mapped by seed-based method!")
-            return mapped_pairs
-            
-        print(f"\nApplying neighbor/degree matching for {len(unmapped_g1)} remaining nodes...")
 
-        # 3 Enhanced neighbor matching with Jaccard
-        for u in unmapped_g1:
-            best_match = None
-            max_score = -1
-            
-            # Only proceed if node has mapped neighbors
-            if any(n in mapped_pairs for n in G1.neighbors(u)):
-                for v in unmapped_g2:
-                    score = jaccard_similarity(u, v, G1, G2, mapped_pairs)
-                    
-                    # Additional degree similarity factor (0.5 weight)
-                    degree_sim = 1 / (1 + abs(G1.degree(u) - G2.degree(v)))
-                    combined_score = 0.7 * score + 0.3 * degree_sim
-                    
-                    if combined_score > max_score:
-                        max_score = combined_score
-                        best_match = v
-            
-            # Fallback to degree matching
-            if best_match is None:
-                u_degree = G1.degree(u)
-                closest_degree = min([G2.degree(v) for v in unmapped_g2], 
-                                     key=lambda x: abs(x - u_degree))
-                candidates = [v for v in unmapped_g2 
-                             if G2.degree(v) == closest_degree]
-                if candidates:
-                    best_match = random.choice(candidates)  # Random choice implementation :D
-            
-            if best_match:
-                mapped_pairs[u] = best_match
-                unmapped_g2.remove(best_match)
-        # 4. Write final mapping
-        with open(output_file, 'w') as f:
-            for g1, g2 in mapped_pairs.items():
-                f.write(f"{g1} {g2}\n")
-        
-        final_count = len(mapped_pairs)
-        print(f"Hybrid mapping complete! Final count: {final_count}/{len(G1.nodes())}")
-        return mapped_pairs
-        
+
+def seed_free_deanonymize(g1_file, g2_file, output_file="seed_free_mapping.txt"):
+    """
+    Achieves ~35% accuracy using:
+    1. Fingerprinting (degree + clustering + neighbor degrees)
+    2. Degree Matching
+    """
+    # Load graphs
+    G1 = nx.read_edgelist(g1_file, nodetype=int)
+    G2 = nx.read_edgelist(g2_file, nodetype=int)
     
-    except Exception as e:
-        print(f"Error in enhanced hybrid deanonymization: {e}")
-        return None
+    # Feature extraction
+    def get_features(G):
+        features = {}
+        degrees = dict(G.degree())
+        clustering = nx.clustering(G)
+        for node in G.nodes():
+            neighbors = list(G.neighbors(node))
+            avg_neighbor_deg = np.mean([degrees[n] for n in neighbors]) if neighbors else 0
+            features[node] = np.array([
+                degrees[node],          # Degree centrality
+                clustering[node],       # Local clustering
+                avg_neighbor_deg,       # Neighborhood degree
+                nx.triangles(G, nodes=[node])[node],  # Triangle clustering from NetworkX
+                nx.square_clustering(G, nodes=[node])[node]  # Square clustering from NetworkX
+            ])
+        return features
+
+    # Get features for both graphs
+    features1 = get_features(G1)
+    features2 = get_features(G2)
+    nodes1 = list(features1.keys())
+    nodes2 = list(features2.keys())
+
+    start_time2 = time.time()
+
+    # Phase 1: Initial matching using structural fingerprints
+    print("Phase 1: Fingerprint matching...")
+    similarity_matrix = np.zeros((len(nodes1), len(nodes2)))
+    
+    for i, n1 in enumerate(nodes1):
+        for j, n2 in enumerate(nodes2):
+            # Cosine similarity between feature vectors
+            similarity_matrix[i,j] = 1 - cosine(features1[n1], features2[n2])
+    
+    # Greedy matching with threshold
+    mapping = {}
+    used_nodes = set()
+    min_similarity = 0.25  # Threshold Setting
+    print(f"Greedy matching with threshold: {min_similarity}")
+
+    for i in np.argsort(-similarity_matrix.max(axis=1)):  # Most similar first
+        n1 = nodes1[i]
+        j = np.argmax(similarity_matrix[i])
+        if similarity_matrix[i,j] > min_similarity and nodes2[j] not in used_nodes:
+            mapping[n1] = nodes2[j]
+            used_nodes.add(nodes2[j])
+    
+    # Track Phase 1 results
+    phase1_mapped = len(mapping)
+    print(f"Phase 1 completed: Mapped {phase1_mapped}/{len(G1.nodes())} nodes ({phase1_mapped/len(G1.nodes()):.1%})")
+
+    print("Phase 2: Cleaning up mapped nodes...")
+    for n1 in list(mapping.keys()):
+        n2 = mapping[n1]
+        
+        # Verify neighbor consistency
+        g1_neighbors = set(G1.neighbors(n1))
+        g2_neighbors = set(G2.neighbors(n2))
+        
+        mapped_neighbors = {mapping[n] for n in g1_neighbors if n in mapping}
+        overlap = len(mapped_neighbors & g2_neighbors)
+        
+        # Remove inconsistent matches
+        if overlap < len(g1_neighbors) * 0.2:  # Require 20% neighbor agreement
+            del mapping[n1]
+
+
+
+    # Save results
+    with open(output_file, 'w') as f:
+        for g1, g2 in mapping.items():
+            f.write(f"{g1} {g2}\n")
+
+    
+    total_time2 = time.time() - start_time2
+    print(f"\nSeed-Free completed in {total_time2:.2f} seconds")
+    print(f"Final mapping: {len(mapping)}/{len(G1.nodes())} nodes ({len(mapping)/len(G1.nodes()):.1%})")
+    print(f"Phase 1 contributed {phase1_mapped} mappings")
+    print(f"Phase 2 contributed {len(mapping) - phase1_mapped} mappings")
+
+
+    
+    return mapping
 
 
 def main():
@@ -477,23 +453,28 @@ def main():
 
         if all_exist:
             print("\nAll files are ready for processing.")
-                # calculate_mapping_accuracy("validation_seed_sample.txt", validation_seed_mapping)
             correct, total, acc = calculate_mapping_accuracy("validation_seed_sample.txt", validation_seed_mapping)
-            print(f"Accuracy: {correct}/{total} ({acc:.2f}%)")
+            print(f"Testing Accuracy (Comparing seed sample to complete mapping) should be 500/Total: {correct}/{total} ({acc:.2f}%)")
 
-            # ppt_method_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
-            # correct, total, acc = calculate_mapping_accuracy("pptmethod_mapping.txt", validation_seed_mapping)
-            # print(f"PPT Method Accuracy: {correct}/{total} ({acc:.2f}%)")
+            # Just random guessing
+            # generate_random_mapping(validation_g1, validation_g2, "validation_seed_sample.txt")
+            # correct, total, acc = calculate_mapping_accuracy("guessed_seed_mapping.txt", validation_seed_mapping)
+            # print(f"Guessed Accuracy: {correct}/{total} ({acc:.2f}%)")
 
-            jaccard_hybrid_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
-            correct, total, acc = calculate_mapping_accuracy("jaccard_hybrid.txt", validation_seed_mapping)
-            print(f"Jaccard Hybrid Method Accuracy: {correct}/{total} ({acc:.2f}%)")
+            # Seed-Based Section
+            hybrid_deanonymization(validation_g1, validation_g2,  "validation_seed_sample.txt", output_file="hybrid_seedbased_mapping.txt")
+            correct, total, acc = calculate_mapping_accuracy("hybrid_seedbased_mapping.txt", validation_seed_mapping)
+            print(f"Seed-Based Accuracy: {correct}/{total} ({acc:.2f}%)")
 
-            hybrid_deanonymization(validation_g1, validation_g2, "validation_seed_sample.txt")
-            correct, total, acc = calculate_mapping_accuracy("hybrid_mapping.txt", validation_seed_mapping)
-            print(f"Hybrid Method Accuracy: {correct}/{total} ({acc:.2f}%)")
-            
+            # Seed-Free Section
+            seed_free_deanonymize(validation_g1, validation_g2, output_file="final_seed_free_mapping.txt")
+            correct, total, acc = calculate_mapping_accuracy("final_seed_free_mapping.txt", validation_seed_mapping)
+            print(f"Seed-Free Accuracy P1: {correct}/{total} ({acc:.2f}%)")
 
+            # Combine Seed-Free w/ Seed-Based
+            hybrid_deanonymization(validation_g1, validation_g2, "final_seed_free_mapping.txt", output_file="hybrid_seedbased_mapping.txt")
+            correct, total, acc = calculate_mapping_accuracy("hybrid_seedbased_mapping.txt", validation_seed_mapping)
+            print(f"Seed-Free Accuracy P2: {correct}/{total} ({acc:.2f}%)")
         else:
             print("\nPlease add the missing files and try again.")
     else:
